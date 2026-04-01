@@ -7,6 +7,12 @@ This repository contains the setup steps, scripts, and configuration required to
 # Gateway Setup
 (Follow the steps in both the gateway)
 **Gateway OS: keros 5** 
+
+If you are in keros 6 need to downgrade use this below command
+
+```bash
+curl --compressed -s https://upgrade.wanesy.com/DowngraderToFw5.12.0 | sudo sh
+```
 ### 1.) Factory Reset
 
 Performed a simple factory reset through the **Web UI**.
