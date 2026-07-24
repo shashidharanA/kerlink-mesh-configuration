@@ -35,6 +35,7 @@ done
 sed -i \
   -e 's/log_to_syslog = false/log_to_syslog = true/' \
   -e 's/border_gateway = false/border_gateway = true/' \
+  -e 's/border_gateway_ignore_direct_uplinks = false/border_gateway_ignore_direct_uplinks = true/' \
   -e 's/frequencies = \[868100000, 868300000, 868500000\]/frequencies = [865062500, 865402500, 865985000]/' \
   -e 's/tx_power = 16/tx_power = 36/' \
   $ETC/chirpstack-gateway-mesh.toml
