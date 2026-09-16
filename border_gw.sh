@@ -32,6 +32,11 @@ for region in as9123 as923_2 as923_3 as923_4 au915 eu868 in865 kr920 ru864 us915
 done
 
 # Apply local overrides
+#
+# Note: these sed patterns assume the upstream template uses "key = value"
+# (spaced). The template has silently changed format before (no spaces),
+# which makes these substitutions no-ops with no error. The grep check below
+# catches that immediately instead of leaving a half-configured gateway.
 sed -i \
   -e 's/log_to_syslog = false/log_to_syslog = true/' \
   -e 's/border_gateway = false/border_gateway = true/' \
@@ -39,6 +44,31 @@ sed -i \
   -e 's/frequencies = \[868100000, 868300000, 868500000\]/frequencies = [865062500, 865402500, 865985000]/' \
   -e 's/tx_power = 16/tx_power = 36/' \
   $ETC/chirpstack-gateway-mesh.toml
+
+grep -q 'log_to_syslog = true' $ETC/chirpstack-gateway-mesh.toml || { echo "ERROR: log_to_syslog override did not apply - check upstream template format" >&2; exit 1; }
+grep -q 'border_gateway = true' $ETC/chirpstack-gateway-mesh.toml || { echo "ERROR: border_gateway override did not apply - check upstream template format" >&2; exit 1; }
+grep -q 'border_gateway_ignore_direct_uplinks = true' $ETC/chirpstack-gateway-mesh.toml || { echo "ERROR: border_gateway_ignore_direct_uplinks override did not apply - check upstream template format" >&2; exit 1; }
+grep -q 'tx_power = 36' $ETC/chirpstack-gateway-mesh.toml || { echo "ERROR: tx_power override did not apply - check upstream template format" >&2; exit 1; }
+grep -q '865062500' $ETC/chirpstack-gateway-mesh.toml || { echo "ERROR: frequencies override did not apply - check upstream template format" >&2; exit 1; }
+
+# root_key / signing_key: the upstream template has dropped these fields
+# entirely in some versions, leaving the mesh with no shared key at all.
+# This MUST match the value configured in relay_gw.sh on every relay, or
+# every relayed packet will be silently dropped here (border looks fine,
+# relay looks fine, nothing reaches the network). Rotate this value in both
+# scripts together if it's ever changed - it is not a secret worth
+# protecting in this file, but it does need to be consistent mesh-wide.
+MESH_ROOT_KEY="00000000000000000000000000000000"
+if grep -q 'root_key' $ETC/chirpstack-gateway-mesh.toml; then
+  sed -i "s/root_key=.*/root_key=\"${MESH_ROOT_KEY}\"/" $ETC/chirpstack-gateway-mesh.toml
+  sed -i "s/signing_key=.*/signing_key=\"${MESH_ROOT_KEY}\"/" $ETC/chirpstack-gateway-mesh.toml
+else
+  sed -i "/^\[mesh\]/a\\  root_key=\"${MESH_ROOT_KEY}\"\\n  signing_key=\"${MESH_ROOT_KEY}\"" $ETC/chirpstack-gateway-mesh.toml
+fi
+
+# max_hop_count: upstream default has drifted between versions (seen as low
+# as 1, which breaks anything beyond a single hop). Force it explicitly.
+sed -i 's/max_hop_count = .*/max_hop_count = 5/' $ETC/chirpstack-gateway-mesh.toml
 
 # Channel plan / region setup
 cp -r /etc/chirpstack-gateway-mesh/region_in865.toml /etc/chirpstack-gateway-mesh/channels.toml
