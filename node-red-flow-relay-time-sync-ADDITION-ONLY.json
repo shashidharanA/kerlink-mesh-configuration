@@ -1,0 +1,121 @@
+[
+  {
+    "id": "ts01inject8h0001",
+    "type": "inject",
+    "z": "e0199546e8a1638d",
+    "name": "Every 8h - sync relay time",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "28800",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 900,
+    "y": 700,
+    "wires": [
+      [
+        "ts02buildcmd0002"
+      ]
+    ]
+  },
+  {
+    "id": "ts02buildcmd0002",
+    "type": "function",
+    "z": "e0199546e8a1638d",
+    "name": "Build relay time-sync command (protobuf)",
+    "func": "// Build raw-binary ChirpStack Gateway Mesh MeshCommand protobuf messages\n// telling every relay listed in RELAY_IDS to set its system clock.\n// Add a new relay by adding its Relay ID (hex string, as shown in\n// ChirpStack's Gateway Mesh > Relay Gateways list) to RELAY_IDS below -\n// no other change needed here.\n//\n// Verified against chirpstack/api/proto/gw/gw.proto:\n//   MeshCommand { gateway_id=1(string), relay_id=2(string), commands=3(repeated MeshCommandItem) }\n//   MeshCommandItem { proprietary=1(MeshCommandProprietary) }\n//   MeshCommandProprietary { command_type=1(uint32), payload=2(bytes) }\n// The command/mesh MQTT topic expects this message RAW (protobuf binary),\n// not JSON - the border mqtt-forwarder has no json=true override here.\n\nvar BORDER_GATEWAY_ID = \"7076ff0064050e55\";\nvar RELAY_IDS = [\n    \"64050f40\"  // Kerlink relay #1\n    // \"xxxxxxxx\", // add additional relays here\n];\nvar COMMAND_TYPE = 129; // matches [commands.commands] entry 129 on each relay, mapped to settime.sh\n\nfunction varint(n) {\n    var bytes = [];\n    while (true) {\n        var b = n & 0x7F;\n        n = n >>> 7;\n        if (n) { bytes.push(b | 0x80); } else { bytes.push(b); break; }\n    }\n    return Buffer.from(bytes);\n}\nfunction tag(fieldNum, wireType) { return varint((fieldNum << 3) | wireType); }\nfunction lenDelim(fieldNum, data) { return Buffer.concat([tag(fieldNum, 2), varint(data.length), data]); }\nfunction varintField(fieldNum, value) { return Buffer.concat([tag(fieldNum, 0), varint(value)]); }\n\n// The relay BusyBox date -s needs \"YYYY-MM-DD HH:MM:SS\" UTC, not ISO-8601\n// (ISO-8601 with T/Z/fractional seconds was tested and rejected as an invalid date).\nfunction nowUtcBusyBox() {\n    var d = new Date();\n    function pad(n) { return (n < 10 ? \"0\" : \"\") + n; }\n    return d.getUTCFullYear() + \"-\" + pad(d.getUTCMonth() + 1) + \"-\" + pad(d.getUTCDate())\n        + \" \" + pad(d.getUTCHours()) + \":\" + pad(d.getUTCMinutes()) + \":\" + pad(d.getUTCSeconds());\n}\n\nfunction buildMeshCommand(relayId, payload) {\n    var proprietary = Buffer.concat([varintField(1, COMMAND_TYPE), lenDelim(2, payload)]);\n    var item = lenDelim(1, proprietary);\n    return Buffer.concat([\n        lenDelim(1, Buffer.from(BORDER_GATEWAY_ID, \"ascii\")),\n        lenDelim(2, Buffer.from(relayId, \"ascii\")),\n        lenDelim(3, item)\n    ]);\n}\n\nvar payload = Buffer.from(nowUtcBusyBox(), \"utf8\");\nvar topic = \"in865/gateway/\" + BORDER_GATEWAY_ID + \"/command/mesh\";\nvar outMsgs = RELAY_IDS.map(function (relayId) {\n    return { topic: topic, payload: buildMeshCommand(relayId, payload) };\n});\n\nreturn [outMsgs];",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1200,
+    "y": 700,
+    "wires": [
+      [
+        "ts03mqttout0003"
+      ]
+    ]
+  },
+  {
+    "id": "ts03mqttout0003",
+    "type": "mqtt out",
+    "z": "e0199546e8a1638d",
+    "name": "Publish time-sync command",
+    "topic": "",
+    "qos": "0",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "780d3a9d82cc895c",
+    "x": 1550,
+    "y": 700,
+    "wires": []
+  },
+  {
+    "id": "ts04mqttin00004",
+    "type": "mqtt in",
+    "z": "e0199546e8a1638d",
+    "name": "Relay mesh events (heartbeat/ack)",
+    "topic": "in865/gateway/7076ff0064050e55/event/mesh",
+    "qos": "0",
+    "datatype": "buffer",
+    "broker": "780d3a9d82cc895c",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 900,
+    "y": 780,
+    "wires": [
+      [
+        "ts05decode00005"
+      ]
+    ]
+  },
+  {
+    "id": "ts05decode00005",
+    "type": "function",
+    "z": "e0199546e8a1638d",
+    "name": "Decode settime.sh response (protobuf)",
+    "func": "// Decode a raw-binary ChirpStack Gateway Mesh MeshEvent protobuf message\n// and surface only the settime.sh response (proprietary eventType 129).\n// Routine heartbeats and other event types are ignored (return null).\n// Schema (chirpstack/api/proto/gw/gw.proto):\n//   MeshEvent { gateway_id=1(string), relay_id=2(string), time=3(Timestamp), events=4(repeated MeshEventItem) }\n//   MeshEventItem { proprietary=1(MeshEventProprietary) or heartbeat=2(MeshEventHeartbeat) }\n//   MeshEventProprietary { event_type=1(uint32), payload=2(bytes) }\n//\n// Requires this node mqtt-in datatype set to \"buffer\" (not auto/string), so binary\n// protobuf bytes are not mangled before reaching here.\n\nfunction readVarint(buf, pos) {\n    var result = 0, shift = 0, b;\n    do {\n        b = buf[pos.i++];\n        result += (b & 0x7F) * Math.pow(2, shift);\n        shift += 7;\n    } while (b & 0x80);\n    return result;\n}\n\nfunction readField(buf, pos) {\n    var tagByte = readVarint(buf, pos);\n    var fieldNum = tagByte >>> 3;\n    var wireType = tagByte & 0x7;\n    var value;\n    if (wireType === 0) {\n        value = readVarint(buf, pos);\n    } else if (wireType === 2) {\n        var len = readVarint(buf, pos);\n        value = buf.slice(pos.i, pos.i + len);\n        pos.i += len;\n    } else if (wireType === 1) {\n        value = buf.slice(pos.i, pos.i + 8); pos.i += 8;\n    } else if (wireType === 5) {\n        value = buf.slice(pos.i, pos.i + 4); pos.i += 4;\n    } else {\n        return null;\n    }\n    return { fieldNum: fieldNum, value: value };\n}\n\nfunction parseMessage(buf) {\n    var pos = { i: 0 };\n    var fields = {};\n    while (pos.i < buf.length) {\n        var f = readField(buf, pos);\n        if (!f) break;\n        if (!fields[f.fieldNum]) fields[f.fieldNum] = [];\n        fields[f.fieldNum].push(f.value);\n    }\n    return fields;\n}\n\nvar buf = msg.payload;\nif (!Buffer.isBuffer(buf)) {\n    node.warn(\"expected Buffer payload - check mqtt-in node datatype is buffer\");\n    return null;\n}\n\nvar top = parseMessage(buf);\nvar relayId = (top[2] && top[2][0]) ? top[2][0].toString(\"ascii\") : undefined;\nvar eventsField = top[4] || [];\n\nfor (var i = 0; i < eventsField.length; i++) {\n    var item = parseMessage(eventsField[i]);\n    if (item[1] && item[1][0]) {\n        var prop = parseMessage(item[1][0]);\n        var eventType = prop[1] ? prop[1][0] : undefined;\n        if (eventType === 129) {\n            var payloadBuf = prop[2] && prop[2][0];\n            var text = payloadBuf ? payloadBuf.toString(\"utf8\") : \"\";\n            msg.payload = { relayId: relayId, settimeOutput: text.trim() };\n            return msg;\n        }\n    }\n}\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1200,
+    "y": 780,
+    "wires": [
+      [
+        "ts06debug000006"
+      ]
+    ]
+  },
+  {
+    "id": "ts06debug000006",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "relay-time-sync-ack",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1550,
+    "y": 780,
+    "wires": []
+  }
+]
