@@ -1,0 +1,616 @@
+[
+  {
+    "id": "1db6b4ad6677b060",
+    "type": "subflow",
+    "name": "Mesh subflow",
+    "info": "",
+    "category": "",
+    "in": [
+      {
+        "x": 40,
+        "y": 260,
+        "wires": [
+          {
+            "id": "ae5549625230aae2"
+          }
+        ]
+      }
+    ],
+    "out": [
+      {
+        "x": 560,
+        "y": 60,
+        "wires": [
+          {
+            "id": "ae5549625230aae2",
+            "port": 0
+          }
+        ]
+      },
+      {
+        "x": 800,
+        "y": 180,
+        "wires": [
+          {
+            "id": "7395a011402411e7",
+            "port": 0
+          }
+        ]
+      },
+      {
+        "x": 820,
+        "y": 340,
+        "wires": [
+          {
+            "id": "ea6bf6e76043e9bb",
+            "port": 0
+          }
+        ]
+      }
+    ],
+    "env": [],
+    "meta": {},
+    "color": "#DDAA99"
+  },
+  {
+    "id": "ae5549625230aae2",
+    "type": "function",
+    "z": "1db6b4ad6677b060",
+    "name": "Decode data port3 port6",
+    "func": "//\n// Module:  catena-message-port3-port6-decoder-node-red.js\n//\n// Function:\n//      This Node-RED decoding function decodes the record sent by the Catena 4618\n//      simple sensor app.\n//\n// License:\n//      Copyright (C) 2019, MCCI Corporation.\n//      See LICENSE in accompanying git repository.\n//\n\n// begin catena-message-port3-port6-decoder-ttn.js\n/*\n\nName:   catena-message-port3-port6-decoder-ttn.js\n\nFunction:\n    Decode MCCI port 0x03/0x06 messages for TTN console.\n\nCopyright and License:\n    See accompanying LICENSE file at https://github.com/mcci-catena/MCCI-Catena-PMS7003/\n\nAuthor:\n    Terry Moore, MCCI Corporation   July 2019\n\n*/\n\n// calculate dewpoint (degrees C) given temperature (C) and relative humidity (0..100)\n// from http://andrew.rsmas.miami.edu/bmcnoldy/Humidity.html\n// rearranged for efficiency and to deal sanely with very low (< 1%) RH\nfunction dewpoint(t, rh) {\n    var c1 = 243.04;\n    var c2 = 17.625;\n    var h = rh / 100;\n    if (h <= 0.01)\n        h = 0.01;\n    else if (h > 1.0)\n        h = 1.0;\n\n    var lnh = Math.log(h);\n    var tpc1 = t + c1;\n    var txc2 = t * c2;\n    var txc2_tpc1 = txc2 / tpc1;\n\n    var tdew = c1 * (lnh + txc2_tpc1) / (c2 - lnh - txc2_tpc1);\n    return tdew;\n}\n\n/*\n\nName:   CalculateHeatIndex()\n\nDescription:\n        Calculate the NWS heat index given dry-bulb T and RH\n\nDefinition:\n        function CalculateHeatIndex(t, rh) -> value or null\n\nDescription:\n        T is a Farentheit temperature in [76,120]; rh is a\n        relative humidity in [0,100]. The heat index is computed\n        and returned; or an error is returned.\n\nReturns:\n        number => heat index in Farenheit.\n        null => error.\n\nReferences:\n        https://github.com/mcci-catena/heat-index/\n        https://www.wpc.ncep.noaa.gov/html/heatindex_equation.shtml\n\n        Results was checked against the full chart at iweathernet.com:\n        https://www.iweathernet.com/wxnetcms/wp-content/uploads/2015/07/heat-index-chart-relative-humidity-2.png\n\n        The MCCI-Catena heat-index site has a test js script to generate CSV to\n        match the chart, a spreadsheet that recreates the chart, and a\n        spreadsheet that compares results.\n\n*/\n\nfunction CalculateHeatIndex(t, rh) {\n    var tRounded = Math.floor(t + 0.5);\n\n    // return null outside the specified range of input parameters\n    if (tRounded < 76 || tRounded > 126)\n        return null;\n    if (rh < 0 || rh > 100)\n        return null;\n\n    // according to the NWS, we try this first, and use it if we can\n    var tHeatEasy = 0.5 * (t + 61.0 + ((t - 68.0) * 1.2) + (rh * 0.094));\n\n    // The NWS says we use tHeatEasy if (tHeatHeasy + t)/2 < 80.0\n    // This is the same computation:\n    if ((tHeatEasy + t) < 160.0)\n            return tHeatEasy;\n\n    // need to use the hard form, and possibly adjust.\n    var t2 = t * t;         // t squared\n    var rh2 = rh * rh;      // rh squared\n    var tResult =\n        -42.379 +\n        (2.04901523 * t) +\n        (10.14333127 * rh) +\n        (-0.22475541 * t * rh) +\n        (-0.00683783 * t2) +\n        (-0.05481717 * rh2) +\n        (0.00122874 * t2 * rh) +\n        (0.00085282 * t * rh2) +\n        (-0.00000199 * t2 * rh2);\n\n    // these adjustments come from the NWA page, and are needed to\n    // match the reference table.\n    var tAdjust;\n    if (rh < 13.0 && 80.0 <= t && t <= 112.0)\n        tAdjust = -((13.0 - rh) / 4.0) * Math.sqrt((17.0 - Math.abs(t - 95.0)) / 17.0);\n    else if (rh > 85.0 && 80.0 <= t && t <= 87.0)\n        tAdjust = ((rh - 85.0) / 10.0) * ((87.0 - t) / 5.0);\n    else\n        tAdjust = 0;\n\n    // apply the adjustment\n    tResult += tAdjust;\n\n    // finally, the reference tables have no data above 183 (rounded),\n    // so filter out answers that we have no way to vouch for.\n    if (tResult >= 183.5)\n        return null;\n    else\n        return tResult;\n}\n\nfunction CalculateHeatIndexCelsius(t, rh) {\n    var result = CalculateHeatIndex(t, rh);\n    if (result !== null) {\n        // convert to celsius.\n        result = (result - 32) * 5 / 9;\n    }\n    return result;\n}\n\n/*\n\nName:  Decoder()\n\nFunction:\n    Decode an MCCI Catena port-3/6 message for The Things Network console.\n\nDefinition:\n    function Decoder(bytes, port) -> object\n\nDescription:\n    This function decodes the message given by the byte array `bytes[]`,\n    and returns an object with values in engineering units.\n\nReturns:\n    Object, or null if the bytes could not be decoded.\n\n*/\n\nfunction Decoder(bytes, port) {\n    // Decode an uplink message from a buffer\n    // (array) of bytes to an object of fields.\n    var decoded = {};\n\n    if (! (port === 3)  && ! (port === 6))\n        return null;\n\n    // see catena-message-port3-format.md\n    // i is used as the index into the message. Start with the flag byte.\n    // note that there's no discriminator.\n    // test vectors are also available there.\n    var i = 0;\n    // fetch the bitmap.\n    var flags = bytes[i++];\n\n    if (flags & 0x1) {\n        // set Vraw to a uint16, and increment pointer\n        var Vraw = (bytes[i] << 8) + bytes[i + 1];\n        i += 2;\n        // interpret uint16 as an int16 instead.\n        if (Vraw & 0x8000)\n            Vraw += -0x10000;\n        // scale and save in result.\n        decoded.Vbat = Vraw / 4096.0;\n    }\n\n    if (flags & 0x2) {\n        var Vraw = (bytes[i] << 8) + bytes[i + 1];\n        i += 2;\n        if (Vraw & 0x8000)\n            Vraw += -0x10000;\n        decoded.VDD = Vraw / 4096.0;\n    }\n\n    if (flags & 0x4) {\n        var iBoot = bytes[i];\n        i += 1;\n        decoded.boot = iBoot;\n    }\n\n    if (flags & 0x8) {\n        // we have temp, pressure, RH\n        var tRaw = (bytes[i] << 8) + bytes[i + 1];\n        if (tRaw & 0x8000)\n            tRaw = -0x10000 + tRaw;\n        i += 2;\n        var rhRaw = (bytes[i] << 8) + bytes[i + 1];\n        i += 2;\n\n        decoded.t = tRaw / 256;\n        decoded.rh = rhRaw / 65535.0 * 100;\n        decoded.tDew =  dewpoint(decoded.t, decoded.rh);\n        decoded.tHeatIndexC = CalculateHeatIndexCelsius(decoded.t, decoded.rh);\n    }\n\n    if (flags & 0x10) {\n        if (port === 3)\n            {\n            // we have light irradiance info\n            var irradiance = {};\n            decoded.irradiance = irradiance;\n\n            var lightRaw = (bytes[i] << 8) + bytes[i + 1];\n            i += 2;\n            irradiance.IR = lightRaw;\n\n            lightRaw = (bytes[i] << 8) + bytes[i + 1];\n            i += 2;\n            irradiance.White = lightRaw;\n\n            lightRaw = (bytes[i] << 8) + bytes[i + 1];\n            i += 2;\n            irradiance.UV = lightRaw;\n            }\n\n        else if (port === 6)\n            {\n            // we have light (lux)\n            var luxRaw = (bytes[i] << 16) + (bytes[i + 1] << 8) + bytes[i + 2];\n            i = i + 3;\n\n            // luxRaw is the 3-byte number decoded from wherever;\n            // it's in range 0..0xFFFFFF\n            // bit 23 is the sign bit\n            // bits 22..16 are the exponent\n            // bits 15..0 are the the mantissa. Unlike IEEE format,\n            // the msb is explicit; this means that numbers\n            // might not be normalized, but makes coding for\n            // underflow easier.\n            // As with IEEE format, negative zero is possible, so\n            // we special-case that in hopes that JavaScript will\n            // also cooperate.\n\n            // extract sign, exponent, mantissa\n            var bSign     = (luxRaw & 0x800000) ? true : false;\n            var uExp      = (luxRaw & 0x7F0000) >> 16;\n            var uMantissa = (luxRaw & 0x00FFFF);\n\n            // if non-numeric, return appropriate result.\n            if (uExp === 0x7F) {\n                if (uMantissa === 0)\n                    return bSign ? Number.NEGATIVE_INFINITY\n                            : Number.POSITIVE_INFINITY;\n                else\n                    return Number.NaN;\n            // else unless denormal, set the 1.0 bit\n            } else if (uExp !== 0) {\n                uMantissa += 0x010000;\n            } else { // denormal: exponent is the minimum\n                uExp = 1;\n            }\n\n            // make a floating mantissa in [0,2); usually [1,2), but\n            // sometimes (0,1) for denormals, and exactly zero for zero.\n            var mantissa = uMantissa / 0x010000;\n\n            // apply the exponent.\n            mantissa = Math.pow(2, uExp - 63) * mantissa;\n\n            // apply sign and return result.\n            decoded.lux = bSign ? -mantissa : mantissa;\n            }\n    }\n\n    if (flags & 0x20) {\n        var Vraw = (bytes[i] << 8) + bytes[i + 1];\n        i += 2;\n        if (Vraw & 0x8000)\n            Vraw += -0x10000;\n        decoded.Vbus = Vraw / 4096.0;\n    }\n\n    // at this point, decoded has the real values.\n    return decoded;\n}\n// end catnea-message-port3-port6-decoder-ttn.js\n\n/*\n\nNode-RED function body.\n\nInput:\n    msg     the object to be decoded.\n\n            msg.payload_raw is taken\n            as the raw payload if present; otheriwse msg.payload\n            is taken to be a raw payload.\n\n            msg.port is taken to be the LoRaWAN port nubmer.\n\n\nReturns:\n    This function returns a message body. It's a mutation of the\n    input msg; msg.payload is changed to the decoded data, and\n    msg.local is set to additional application-specific information.\n\n*/\n\nvar b;\n\nif (\"payload_raw\" in msg) {\n    // the console already decoded this\n    b = msg.payload_raw;  // pick up data for convenience\n    // msg.payload_fields still has the decoded data\n}\nelse {\n    // no console debug\n    b = msg.payload;  // pick up data for conveneince\n}\n\nvar result = Decoder(b, msg.port);\n\n// now update msg with the new payload and new .local field\n// the old msg.payload is overwritten.\nmsg.payload = result;\nmsg.local =\n    {\n        nodeType: \"Catena 4617/4618\",\n        platformType: \"Catena 461x\",\n        radioType: \"Murata\",\n        applicationName: \"Simple sensor\"\n    };\n\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 230,
+    "y": 260,
+    "wires": [
+      [
+        "ea6bf6e76043e9bb",
+        "7395a011402411e7"
+      ]
+    ]
+  },
+  {
+    "id": "ea6bf6e76043e9bb",
+    "type": "function",
+    "z": "1db6b4ad6677b060",
+    "name": "Prepare for RF store",
+    "func": "// -------------------- SAFETY CHECKS --------------------\nif (!msg.payload || typeof msg.payload !== \"object\") {\n    return null;\n}\n\n// -------------------- BUILD METADATA --------------------\nvar metadata;\n\nif (msg.metadata) {\n    // TTN path\n    metadata = msg.metadata;\n} \nelse if (msg.payload.txInfo && msg.payload.rxInfo) {\n    // ChirpStack path\n    metadata = {\n        frequency: msg.payload.txInfo.frequency / 1e6,\n        data_rate: \"SF\" + msg.payload.txInfo.modulation.lora.spreadingFactor +\n                   \"BW\" + (msg.payload.txInfo.modulation.lora.bandwidth / 1000),\n        coding_rate: msg.payload.txInfo.modulation.lora.codeRate,\n        gateways: (msg.payload.rxInfo || []).map(gw => ({\n            rssi: gw.rssi,\n            snr: gw.snr,\n            channel: gw.channel,\n            gtw_id: gw.gatewayId\n        }))\n    };\n} \nelse {\n    // Not an uplink message \u2192 ignore\n    return null;\n}\n\n// -------------------- DATA RATE PARSE --------------------\nvar data_rate_re = /SF(\\d+)BW(\\d+)/;\nvar dataRateArray = data_rate_re.exec(metadata.data_rate);\n\nif (!dataRateArray) {\n    return null;\n}\n\n// -------------------- BEST GATEWAY --------------------\nfunction findBestGateway(g) {\n    var rssi = -1000;\n    var bestRssi;\n    var snr = -1000;\n    var bestSnr;\n\n    for (var i in g) {\n        if (g[i].rssi > rssi) {\n            rssi = g[i].rssi;\n            bestRssi = i;\n        }\n        if (g[i].snr > snr) {\n            snr = g[i].snr;\n            bestSnr = i;\n        }\n    }\n    \n    if (bestRssi == bestSnr)\n        return g[bestRssi];\n        \n    if (rssi < -80)\n        return g[bestSnr];\n    else\n        return g[bestRssi];\n}\n\nvar g = findBestGateway(metadata.gateways || []);\n\nif (!g) {\n    return null;\n}\n\n// -------------------- DEVICE INFO --------------------\nvar devEUI = msg.hardware_serial || (msg.payload.deviceInfo && msg.payload.deviceInfo.devEui);\nvar devID  = msg.dev_id || (msg.payload.deviceInfo && msg.payload.deviceInfo.deviceName);\nvar counter = msg.counter || msg.payload.fCnt;\n\n// -------------------- RESULT --------------------\nvar result = {\n    payload: [\n        {\n            frequency: metadata.frequency,\n            channel: g.channel,\n            datarate: metadata.data_rate,\n            codingrate: metadata.coding_rate,\n            spreadingFactor: Number(dataRateArray[1]),\n            bandwidth: Number(dataRateArray[2]),\n            rssi: g.rssi,\n            snr: g.snr,\n            msgID: msg._msgid,\n            counter: counter,\n        },\n        {\n            devEUI: devEUI,\n            devID: devID,\n            gatewayEUI: g.gtw_id,\n            nodeType: msg.local && msg.local.nodeType,\n            platformType: msg.local && msg.local.platformType,\n            radioType: msg.local && msg.local.radioType,\n            applicationName: msg.local && msg.local.applicationName,\n            frequency: metadata.frequency,\n            channel: g.channel,\n            datarate: metadata.data_rate,\n            spreadingFactor: Number(dataRateArray[1]),\n            bandwidth: Number(dataRateArray[2]),\n            codingrate: metadata.coding_rate,\n        }\n    ]\n};\n\nreturn result;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 570,
+    "y": 340,
+    "wires": [
+      [
+        "924e1cfb19e260df"
+      ]
+    ]
+  },
+  {
+    "id": "7395a011402411e7",
+    "type": "function",
+    "z": "1db6b4ad6677b060",
+    "name": "Prepare for DB",
+    "func": "var result =\n{\n    payload:\n        [{\n            msgID: msg._msgid,\n            counter: msg.counter,\n            //time: new Date(msg.metadata.time).getTime(),\n        },\n        {\n            devEUI: msg.hardware_serial,\n            devID: msg.dev_id,\n            displayName: msg.display_id,\n            displayKey: msg.display_key,\n            nodeType: msg.local.nodeType,\n            platformType: msg.local.platformType,\n            radioType: msg.local.radioType,\n            applicationName: msg.local.applicationName,\n        }]\n};\n\nvar t = result.payload[0];\nvar tags = result.payload[1];\n\n// copy the fields we want as values to the database slot 0.\nvar value_keys = [\n    \"Vbat\", \"VDD\", \"boot\", \"tDew\", \"tHeatIndexC\", \"t\", \"rh\", \"irradiance\", \"lux\", \"Vbus\"\n];\n\n// copy the fields we want as tags to the database slot 1\nvar tag_keys = [\n    /* none */\n];\n\nfunction insert_value(pOutput, sInKey, inValue) {\n    if (typeof inValue == \"object\") {\n        for (var i in inValue)\n            insert_value(pOutput, sInKey + \".\" + i, inValue[i]);\n    }\n    else\n        pOutput[sInKey] = inValue;\n}\n\nfor (var i in value_keys) {\n    var key = value_keys[i];\n    if (key in msg.payload) {\n        // if we get an object generate an entry for each\n        insert_value(t, key, msg.payload[key]);\n    }\n}\nfor (var i in tag_keys) {\n    var key_tag = tag_keys[i];\n    if (key_tag in msg.payload)\n        tags[key_tag] = msg.payload[key_tag];\n}\n\nreturn result;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 580,
+    "y": 180,
+    "wires": [
+      [
+        "a7e154f414b9cc8f"
+      ]
+    ]
+  },
+  {
+    "id": "a7e154f414b9cc8f",
+    "type": "debug",
+    "z": "1db6b4ad6677b060",
+    "name": "DATA",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 770,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "924e1cfb19e260df",
+    "type": "debug",
+    "z": "1db6b4ad6677b060",
+    "name": "RF",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 790,
+    "y": 280,
+    "wires": []
+  },
+  {
+    "id": "e0199546e8a1638d",
+    "type": "tab",
+    "label": "Mesh Setup - Chirpstack",
+    "disabled": false,
+    "info": "",
+    "env": []
+  },
+  {
+    "id": "fa3774f9b2df1f0c",
+    "type": "influxdb out",
+    "z": "e0199546e8a1638d",
+    "influxdb": "392c86ebd4aa7542",
+    "name": "Mesh Setup DATA",
+    "measurement": "mesh_test_data",
+    "precision": "",
+    "retentionPolicy": "",
+    "database": "database",
+    "precisionV18FluxV20": "ms",
+    "retentionPolicyV18Flux": "",
+    "org": "organisation",
+    "bucket": "bucket",
+    "x": 1490,
+    "y": 460,
+    "wires": []
+  },
+  {
+    "id": "afd51326ccca7813",
+    "type": "influxdb out",
+    "z": "e0199546e8a1638d",
+    "influxdb": "392c86ebd4aa7542",
+    "name": "Mesh Setup RF",
+    "measurement": "mesh_test_rf",
+    "precision": "",
+    "retentionPolicy": "",
+    "database": "database",
+    "precisionV18FluxV20": "ms",
+    "retentionPolicyV18Flux": "",
+    "org": "organisation",
+    "bucket": "bucket",
+    "x": 1480,
+    "y": 560,
+    "wires": []
+  },
+  {
+    "id": "e1656a590b3df69f",
+    "type": "subflow:1db6b4ad6677b060",
+    "z": "e0199546e8a1638d",
+    "name": "",
+    "x": 1250,
+    "y": 540,
+    "wires": [
+      [
+        "d177a357dd3e9f5e"
+      ],
+      [
+        "fa3774f9b2df1f0c",
+        "d5cd4ac9571cbf04"
+      ],
+      [
+        "afd51326ccca7813",
+        "7ca7f34271eb142e"
+      ]
+    ]
+  },
+  {
+    "id": "d177a357dd3e9f5e",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "mesh-test-data",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1480,
+    "y": 400,
+    "wires": []
+  },
+  {
+    "id": "d5cd4ac9571cbf04",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "mesh-db-data",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1480,
+    "y": 520,
+    "wires": []
+  },
+  {
+    "id": "7ca7f34271eb142e",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "mesh-RFdata",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1480,
+    "y": 620,
+    "wires": []
+  },
+  {
+    "id": "46446c3ea8e368c9",
+    "type": "function",
+    "z": "e0199546e8a1638d",
+    "name": "TTN V3 > V2",
+    "func": "/*\nName:   ttn_v3_to_v2_convertor.js\n\nFunction:\n    This function converts the TTN v3 payload into v2 payload format.\n\nCopyright and License:\n    This file copyright (c) 2021 by\n\n        MCCI Corporation\n        3520 Krums Corners Road\n        Ithaca, NY   14850\n\n    An unpublished work. All rights reserved\n\n    This file is proprietary information, and may not be disclosed or\n    copied without the prior permission of MCCI Corporation\n\nAuthor:\n    Sivaprakash Veluthambi, MCCI Corporation   March 2021\n    \n*/\n\nfunction fixChannel(msg) {\n    var bandwidth = msg.payload_v3.uplink_message.settings.frequency;\n    var frequency = msg.payload_v3.uplink_message.settings.data_rate.lora.bandwidth/1000;\n    var fBase = bandwidth === 125 ? 902.3 : 903;\n    var fWidth = bandwidth === 125 ? 0.2 : 1.6;\n    var chBase = bandwidth === 125 ? 0 : 64;\n    var channel = (frequency - fBase) / fWidth + chBase;\n    // channel is the 0..71 channel from the regional spec,\n    // not the number from TTN v2 for US.\n    // round channel to nearest multiple of 0.001\n    channel = Math.floor(channel * 1000 + 0.5) / 1000;\n    if (0 <= channel && channel <= 63 && bandwidth === 125) {\n        // probably US. that means subband 2, so offset\n        msg.payload.metadata.gateways[i].channel = channel - 8;\n    } else if (64 <= channel && channel <= 71 && bandwidth === 500) {\n        msg.payload.metadata.gateways[i].channel = channel;\n    } else {\n        msg.payload.metadata.gateways[i].channel = 0;\n    }\n}\n\nif (msg.topic.startsWith(\"v3\")) {\n    msg['payload_v3'] = msg.payload;\n    msg.payload = {};\n\n    // device info\n    msg.payload.app_id = msg.payload_v3.end_device_ids.application_ids.application_id;\n    msg.payload.dev_id = msg.payload_v3.end_device_ids.device_id;\n    msg.payload.hardware_serial = msg.payload_v3.end_device_ids.dev_eui;\n\n    // uplink info\n    msg.payload.port = msg.payload_v3.uplink_message.f_port;\n    msg.payload.counter = msg.payload_v3.uplink_message.f_cnt;\n    msg.payload.payload_raw = msg.payload_v3.uplink_message.frm_payload;\n\n    msg.payload.payload_fields = {};\n    msg.payload.payload_fields = msg.payload_v3.uplink_message.decoded_payload;\n\n    // metadata\n    msg.payload.metadata = {};\n    msg.payload.metadata.time = msg.payload_v3.uplink_message.received_at;\n    msg.payload.metadata.frequency = msg.payload_v3.uplink_message.settings.frequency/(1000*1000);\n    msg.payload.metadata.modulation = \"LORA\"\n    // data rate = spreading factor + bandwidth\n    msg.payload.metadata.data_rate = \"SF\" + msg.payload_v3.uplink_message.settings.data_rate.lora.spreading_factor + \"BW\" + (msg.payload_v3.uplink_message.settings.data_rate.lora.bandwidth/1000)\n    msg.payload.metadata.airtime = msg.payload_v3.uplink_message.consumed_airtime;\n    msg.payload.metadata.coding_rate = msg.payload_v3.uplink_message.settings.data_rate.lora.coding_rate;\n\n    // metadata gateway info\n    msg.payload.metadata.gateways = [];\n    for (var i in msg.payload_v3.uplink_message.rx_metadata) {\n        msg.payload.metadata.gateways[i] = {};\n        msg.payload.metadata.gateways[i].gtw_id = msg.payload_v3.uplink_message.rx_metadata[i].gateway_ids.gateway_id;\n        msg.payload.metadata.gateways[i].rssi = msg.payload_v3.uplink_message.rx_metadata[i].rssi;\n        msg.payload.metadata.gateways[i].snr = msg.payload_v3.uplink_message.rx_metadata[i].snr;\n        msg.payload.metadata.gateways[i].rf_chain = \"unknown\";\n\n        if (\"channel_index\" in msg.payload_v3.uplink_message.rx_metadata[i] && msg.payload_v3.uplink_message.rx_metadata[i].channel_index > 0) {\n            msg.payload.metadata.gateways[i].channel = msg.payload_v3.uplink_message.rx_metadata[i].channel_index;\n        }\n        else {\n            // fix channel\n            fixChannel(msg)\n        }\n\n        if (\"timestamp\" in msg.payload_v3.uplink_message.rx_metadata[i]) {\n            msg.payload.metadata.gateways[i].timestamp = msg.payload_v3.uplink_message.rx_metadata[i].timestamp;\n        }\n        \n        if (\"time\" in msg.payload_v3.uplink_message.rx_metadata[i]) {\n            msg.payload.metadata.gateways[i].time = msg.payload_v3.uplink_message.rx_metadata[i].time;\n        }\n    }\n\n}\n\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1130,
+    "y": 240,
+    "wires": [
+      [
+        "f551ffa9f7a4bdfa",
+        "ce8a1ded8a0ca9c3"
+      ]
+    ]
+  },
+  {
+    "id": "f551ffa9f7a4bdfa",
+    "type": "base64",
+    "z": "e0199546e8a1638d",
+    "name": "",
+    "action": "",
+    "property": "payload.payload_raw",
+    "x": 1120,
+    "y": 320,
+    "wires": [
+      [
+        "9d1cbbc3b8809d5b",
+        "fd9ad177ecd726d5"
+      ]
+    ]
+  },
+  {
+    "id": "9d1cbbc3b8809d5b",
+    "type": "function",
+    "z": "e0199546e8a1638d",
+    "name": "TTN > Normal Form",
+    "func": "// move things around.\n// since some TTN things are not portable,\n// in future we might not want to use them.\n\nvar result = {};\nvar payload = msg.payload;\n\n\n// save original data\nresult.network_payload = msg;\n\n// app_id: TTN concept, not portable.\n//  query a database to pick this up.\nresult.app_id = \"app-id-\" + payload.app_id;\n\n// dev_id: TTN concept, not portable\n//  use \"device-*\" notation, later query a\n//  database to pick this up.\nresult.dev_id = payload.dev_id.startsWith(\"device-\") ? payload.dev_id : \"device-\" + payload.dev_id;\n\n// hardware_serial: TTN name; we ought to use DevEUI.\nresult.hardware_serial = payload.hardware_serial;\n\n// port: this is the uplink port.\nresult.port = parseInt(payload.port);\n\n// counter: this is FCntUp\nresult.counter = parseInt(payload.counter);\n\nresult.payload_raw = payload.payload_raw;\nresult.payload = payload.payload_raw;\n\n// metadata\nvar metadata = {};\nresult.metadata = metadata;\nmetadata.network = \"TTN\";\nmetadata.time = new Date(payload.Time);\n// this might be FSK, but..\nmetadata.modulation = \"LORA\";\n// this might be BW250 but...\nmetadata.data_rate =  payload.metadata.data_rate;\nmetadata.coding_rate = payload.metadata.coding_rate;\n\n//  database to pick frequency as actility do not provide.\nmetadata.frequency = payload.metadata.frequency;\nmetadata.gateways = [];\nmetadata.gateways[0] = {};\nmetadata.gateways[0].gtw_id = payload.metadata.gateways[0].gtw_id;\nmetadata.gateways[0].rssi = payload.metadata.gateways[0].rssi;\nmetadata.gateways[0].snr = payload.metadata.gateways[0].snr;\nmetadata.gateways[0].rf_chain = payload.metadata.gateways[0].rf_chain;\n// this is wrong, but looks like data is region-specific\nmetadata.gateways[0].channel = payload.metadata.gateways[0].channel;\nmetadata.gateways[0].latitude = payload.metadata.gateways[0].latitude;\nmetadata.gateways[0].longitude =payload.metadata.gateways[0].longitude;\n\nreturn result;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1160,
+    "y": 400,
+    "wires": [
+      [
+        "e1656a590b3df69f",
+        "d774644b9427767e"
+      ]
+    ]
+  },
+  {
+    "id": "ce8a1ded8a0ca9c3",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "TTN V3 > TTN V2",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1410,
+    "y": 240,
+    "wires": []
+  },
+  {
+    "id": "fd9ad177ecd726d5",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "base64",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1380,
+    "y": 320,
+    "wires": []
+  },
+  {
+    "id": "d774644b9427767e",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "TTN > Normal Form",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1420,
+    "y": 360,
+    "wires": []
+  },
+  {
+    "id": "chirp_mqtt",
+    "type": "mqtt in",
+    "z": "e0199546e8a1638d",
+    "name": "ChirpStack MQTT",
+    "topic": "application/+/device/+/event/up",
+    "qos": "0",
+    "datatype": "auto",
+    "broker": "780d3a9d82cc895c",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 910,
+    "y": 120,
+    "wires": [
+      [
+        "chirp_json",
+        "chirp_debug"
+      ]
+    ]
+  },
+  {
+    "id": "chirp_json",
+    "type": "json",
+    "z": "e0199546e8a1638d",
+    "name": "Parse ChirpStack JSON",
+    "property": "payload",
+    "action": "",
+    "pretty": false,
+    "x": 1130,
+    "y": 120,
+    "wires": [
+      [
+        "chirp_adapter"
+      ]
+    ]
+  },
+  {
+    "id": "chirp_adapter",
+    "type": "function",
+    "z": "e0199546e8a1638d",
+    "name": "ChirpStack \u2192 TTN Adapter",
+    "func": "// -------------------- SAFETY --------------------\nif (!msg.payload || typeof msg.payload !== \"object\") return null;\nif (!msg.payload.data || !msg.payload.txInfo) return null;\n\nvar d = msg.payload;\n\n// Force topic to look like TTN\nmsg.topic = \"v3/chirpstack/devices/\" + (d.deviceInfo?.deviceName || \"unknown\") + \"/up\";\n\nmsg.payload = {\n    end_device_ids: {\n        device_id: d.deviceInfo?.deviceName || \"unknown\",\n        dev_eui: d.deviceInfo?.devEui || \"unknown\",\n        application_ids: {\n            application_id: d.deviceInfo?.applicationName || \"chirpstack\"\n        }\n    },\n    uplink_message: {\n        f_port: d.fPort,\n        f_cnt: d.fCnt,\n        frm_payload: d.data,\n        received_at: d.time,\n\n        settings: {\n            frequency: d.txInfo.frequency,\n            data_rate: {\n                lora: {\n                    bandwidth: d.txInfo.modulation.lora.bandwidth,\n                    spreading_factor: d.txInfo.modulation.lora.spreadingFactor,\n                    coding_rate: (d.txInfo.modulation.lora.codeRate || \"\").replace(\"CR_\", \"\").replace(\"_\", \"/\")\n                }\n            }\n        },\n\n        rx_metadata: (d.rxInfo || []).map(gw => ({\n            gateway_ids: {\n                gateway_id: gw.gatewayId\n            },\n            rssi: gw.rssi,\n            snr: gw.snr,\n            channel_index: gw.channel,\n            time: gw.gwTime\n        }))\n    }\n};\n\nreturn msg;",
+    "outputs": 1,
+    "noerr": 0,
+    "x": 1390,
+    "y": 120,
+    "wires": [
+      [
+        "46446c3ea8e368c9"
+      ]
+    ]
+  },
+  {
+    "id": "chirp_debug",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "ChirpStack Raw",
+    "active": false,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1150,
+    "y": 60,
+    "wires": []
+  },
+  {
+    "id": "392c86ebd4aa7542",
+    "type": "influxdb",
+    "hostname": "influxdb",
+    "port": "8086",
+    "protocol": "http",
+    "database": "mesh_setup",
+    "name": "mesh_setup",
+    "usetls": false,
+    "tls": "aacc86e6.f44288",
+    "influxdbVersion": "1.x",
+    "url": "http://localhost:8086",
+    "timeout": "10",
+    "rejectUnauthorized": true
+  },
+  {
+    "id": "780d3a9d82cc895c",
+    "type": "mqtt-broker",
+    "name": "chirpstack",
+    "broker": "chirpstack.mcci.io",
+    "port": "1883",
+    "tls": "",
+    "clientid": "",
+    "autoConnect": true,
+    "usetls": false,
+    "protocolVersion": "4",
+    "keepalive": "60",
+    "cleansession": true,
+    "birthTopic": "",
+    "birthQos": "0",
+    "birthPayload": "",
+    "birthMsg": {},
+    "closeTopic": "",
+    "closeQos": "0",
+    "closePayload": "",
+    "closeMsg": {},
+    "willTopic": "",
+    "willQos": "0",
+    "willPayload": "",
+    "willMsg": {},
+    "userProps": "",
+    "sessionExpiry": ""
+  },
+  {
+    "id": "aacc86e6.f44288",
+    "type": "tls-config",
+    "name": "SNI eu.thethings.network",
+    "cert": "",
+    "key": "",
+    "ca": "",
+    "certname": "",
+    "keyname": "",
+    "caname": "",
+    "servername": "eu.thethings.network",
+    "verifyservercert": true
+  },
+  {
+    "id": "ts01inject8h0001",
+    "type": "inject",
+    "z": "e0199546e8a1638d",
+    "name": "Every 8h - sync relay time",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "28800",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "",
+    "payloadType": "date",
+    "x": 900,
+    "y": 700,
+    "wires": [
+      [
+        "ts02buildcmd0002"
+      ]
+    ]
+  },
+  {
+    "id": "ts02buildcmd0002",
+    "type": "function",
+    "z": "e0199546e8a1638d",
+    "name": "Build relay time-sync command (protobuf)",
+    "func": "// Build raw-binary ChirpStack Gateway Mesh MeshCommand protobuf messages\n// telling every relay listed in RELAY_IDS to set its system clock.\n// Add a new relay by adding its Relay ID (hex string, as shown in\n// ChirpStack's Gateway Mesh > Relay Gateways list) to RELAY_IDS below -\n// no other change needed here.\n//\n// Verified against chirpstack/api/proto/gw/gw.proto:\n//   MeshCommand { gateway_id=1(string), relay_id=2(string), commands=3(repeated MeshCommandItem) }\n//   MeshCommandItem { proprietary=1(MeshCommandProprietary) }\n//   MeshCommandProprietary { command_type=1(uint32), payload=2(bytes) }\n// The command/mesh MQTT topic expects this message RAW (protobuf binary),\n// not JSON - the border mqtt-forwarder has no json=true override here.\n\nvar BORDER_GATEWAY_ID = \"7076ff0064050e55\";\nvar RELAY_IDS = [\n    \"64050f40\"  // Kerlink relay #1\n    // \"xxxxxxxx\", // add additional relays here\n];\nvar COMMAND_TYPE = 129; // matches [commands.commands] entry 129 on each relay, mapped to settime.sh\n\nfunction varint(n) {\n    var bytes = [];\n    while (true) {\n        var b = n & 0x7F;\n        n = n >>> 7;\n        if (n) { bytes.push(b | 0x80); } else { bytes.push(b); break; }\n    }\n    return Buffer.from(bytes);\n}\nfunction tag(fieldNum, wireType) { return varint((fieldNum << 3) | wireType); }\nfunction lenDelim(fieldNum, data) { return Buffer.concat([tag(fieldNum, 2), varint(data.length), data]); }\nfunction varintField(fieldNum, value) { return Buffer.concat([tag(fieldNum, 0), varint(value)]); }\n\n// The relay BusyBox date -s needs \"YYYY-MM-DD HH:MM:SS\" UTC, not ISO-8601\n// (ISO-8601 with T/Z/fractional seconds was tested and rejected as an invalid date).\nfunction nowUtcBusyBox() {\n    var d = new Date();\n    function pad(n) { return (n < 10 ? \"0\" : \"\") + n; }\n    return d.getUTCFullYear() + \"-\" + pad(d.getUTCMonth() + 1) + \"-\" + pad(d.getUTCDate())\n        + \" \" + pad(d.getUTCHours()) + \":\" + pad(d.getUTCMinutes()) + \":\" + pad(d.getUTCSeconds());\n}\n\nfunction buildMeshCommand(relayId, payload) {\n    var proprietary = Buffer.concat([varintField(1, COMMAND_TYPE), lenDelim(2, payload)]);\n    var item = lenDelim(1, proprietary);\n    return Buffer.concat([\n        lenDelim(1, Buffer.from(BORDER_GATEWAY_ID, \"ascii\")),\n        lenDelim(2, Buffer.from(relayId, \"ascii\")),\n        lenDelim(3, item)\n    ]);\n}\n\nvar payload = Buffer.from(nowUtcBusyBox(), \"utf8\");\nvar topic = \"in865/gateway/\" + BORDER_GATEWAY_ID + \"/command/mesh\";\nvar outMsgs = RELAY_IDS.map(function (relayId) {\n    return { topic: topic, payload: buildMeshCommand(relayId, payload) };\n});\n\nreturn [outMsgs];",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1200,
+    "y": 700,
+    "wires": [
+      [
+        "ts03mqttout0003"
+      ]
+    ]
+  },
+  {
+    "id": "ts03mqttout0003",
+    "type": "mqtt out",
+    "z": "e0199546e8a1638d",
+    "name": "Publish time-sync command",
+    "topic": "",
+    "qos": "0",
+    "retain": "false",
+    "respTopic": "",
+    "contentType": "",
+    "userProps": "",
+    "correl": "",
+    "expiry": "",
+    "broker": "780d3a9d82cc895c",
+    "x": 1550,
+    "y": 700,
+    "wires": []
+  },
+  {
+    "id": "ts04mqttin00004",
+    "type": "mqtt in",
+    "z": "e0199546e8a1638d",
+    "name": "Relay mesh events (heartbeat/ack)",
+    "topic": "in865/gateway/7076ff0064050e55/event/mesh",
+    "qos": "0",
+    "datatype": "buffer",
+    "broker": "780d3a9d82cc895c",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 900,
+    "y": 780,
+    "wires": [
+      [
+        "ts05decode00005"
+      ]
+    ]
+  },
+  {
+    "id": "ts05decode00005",
+    "type": "function",
+    "z": "e0199546e8a1638d",
+    "name": "Decode settime.sh response (protobuf)",
+    "func": "// Decode a raw-binary ChirpStack Gateway Mesh MeshEvent protobuf message\n// and surface only the settime.sh response (proprietary eventType 129).\n// Routine heartbeats and other event types are ignored (return null).\n// Schema (chirpstack/api/proto/gw/gw.proto):\n//   MeshEvent { gateway_id=1(string), relay_id=2(string), time=3(Timestamp), events=4(repeated MeshEventItem) }\n//   MeshEventItem { proprietary=1(MeshEventProprietary) or heartbeat=2(MeshEventHeartbeat) }\n//   MeshEventProprietary { event_type=1(uint32), payload=2(bytes) }\n//\n// Requires this node mqtt-in datatype set to \"buffer\" (not auto/string), so binary\n// protobuf bytes are not mangled before reaching here.\n\nfunction readVarint(buf, pos) {\n    var result = 0, shift = 0, b;\n    do {\n        b = buf[pos.i++];\n        result += (b & 0x7F) * Math.pow(2, shift);\n        shift += 7;\n    } while (b & 0x80);\n    return result;\n}\n\nfunction readField(buf, pos) {\n    var tagByte = readVarint(buf, pos);\n    var fieldNum = tagByte >>> 3;\n    var wireType = tagByte & 0x7;\n    var value;\n    if (wireType === 0) {\n        value = readVarint(buf, pos);\n    } else if (wireType === 2) {\n        var len = readVarint(buf, pos);\n        value = buf.slice(pos.i, pos.i + len);\n        pos.i += len;\n    } else if (wireType === 1) {\n        value = buf.slice(pos.i, pos.i + 8); pos.i += 8;\n    } else if (wireType === 5) {\n        value = buf.slice(pos.i, pos.i + 4); pos.i += 4;\n    } else {\n        return null;\n    }\n    return { fieldNum: fieldNum, value: value };\n}\n\nfunction parseMessage(buf) {\n    var pos = { i: 0 };\n    var fields = {};\n    while (pos.i < buf.length) {\n        var f = readField(buf, pos);\n        if (!f) break;\n        if (!fields[f.fieldNum]) fields[f.fieldNum] = [];\n        fields[f.fieldNum].push(f.value);\n    }\n    return fields;\n}\n\nvar buf = msg.payload;\nif (!Buffer.isBuffer(buf)) {\n    node.warn(\"expected Buffer payload - check mqtt-in node datatype is buffer\");\n    return null;\n}\n\nvar top = parseMessage(buf);\nvar relayId = (top[2] && top[2][0]) ? top[2][0].toString(\"ascii\") : undefined;\nvar eventsField = top[4] || [];\n\nfor (var i = 0; i < eventsField.length; i++) {\n    var item = parseMessage(eventsField[i]);\n    if (item[1] && item[1][0]) {\n        var prop = parseMessage(item[1][0]);\n        var eventType = prop[1] ? prop[1][0] : undefined;\n        if (eventType === 129) {\n            var payloadBuf = prop[2] && prop[2][0];\n            var text = payloadBuf ? payloadBuf.toString(\"utf8\") : \"\";\n            msg.payload = { relayId: relayId, settimeOutput: text.trim() };\n            return msg;\n        }\n    }\n}\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1200,
+    "y": 780,
+    "wires": [
+      [
+        "ts06debug000006"
+      ]
+    ]
+  },
+  {
+    "id": "ts06debug000006",
+    "type": "debug",
+    "z": "e0199546e8a1638d",
+    "name": "relay-time-sync-ack",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "true",
+    "targetType": "full",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1550,
+    "y": 780,
+    "wires": []
+  }
+]
